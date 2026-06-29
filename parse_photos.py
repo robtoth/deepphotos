@@ -1,6 +1,6 @@
 import argparse
 import logging
-import os
+from math import sqrt
 from pathlib import Path
 from typing import Tuple, Optional, List, Iterator
 from PIL import Image
@@ -10,9 +10,13 @@ from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from itertools import islice
 import pillow_heif  # Add HEIF support
+import uuid
 
 # Register HEIF opener with Pillow
 pillow_heif.register_heif_opener()
+
+# Constants
+BATCH_SIZE = 2000  # Number of files per batch
 
 def setup_logging() -> None:
     """Configure logging with formatting and level."""
@@ -48,8 +52,8 @@ def get_batch_folder_name(batch_number: int) -> str:
     Returns:
         str: Folder name in format 'batch_XXXXX-XXXXX'
     """
-    start_index = batch_number * 100
-    end_index = start_index + 100
+    start_index = batch_number * BATCH_SIZE
+    end_index = start_index + BATCH_SIZE
     return f'batch_{start_index:05d}-{end_index:05d}'
 
 def convert_to_rgb(image: Image.Image) -> Image.Image:
@@ -152,11 +156,9 @@ def calculate_resize_dimensions(width: int, height: int, target_pixels: int = 1_
         Tuple[int, int]: New (width, height) maintaining aspect ratio
     """
     current_pixels = width * height
-    if current_pixels <= target_pixels:
-        return width, height
         
     # Calculate scaling factor to hit target pixels
-    scale = (target_pixels / current_pixels) ** 0.5
+    scale = sqrt(target_pixels / current_pixels)
     
     # Round to integers while maintaining aspect ratio
     new_width = int(width * scale)
@@ -191,8 +193,10 @@ def process_file(args: Tuple[Path, Path, Path]) -> Optional[str]:
         logging.debug(f'📐 Resizing image from {image.width}×{image.height} to {new_width}×{new_height}')
         image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
     
-    # Save as JPG
-    output_filename = batch_folder / f'{file_path.stem}.jpg'
+    # Use a UUID filename
+    unique_name = f"{uuid.uuid4().hex}.jpg"
+    output_filename = batch_folder / unique_name
+
     try:
         image.save(output_filename, 'JPEG', quality=80)
         return str(output_filename)
@@ -222,16 +226,15 @@ def process_images(input_dir: Path, output_dir: Path) -> None:
     # Track failed files
     failed_files: List[Path] = []
     
-    # Calculate optimal chunk size and number of processes
+    # Calculate optimal number of processes
     num_processes = multiprocessing.cpu_count()
-    chunk_size = 100  # Keep batch size consistent
     logging.info(f'🧮 Using {num_processes} processes')
     
     # Prepare batches of work
     successful_conversions = 0
     with tqdm(total=len(input_files), desc='Processing images', unit='files') as pbar:
         with ProcessPoolExecutor(max_workers=num_processes) as executor:
-            for batch_idx, file_batch in enumerate(chunk_list(input_files, chunk_size)):
+            for batch_idx, file_batch in enumerate(chunk_list(input_files, BATCH_SIZE)):
                 # Create batch folder
                 batch_folder = output_dir / get_batch_folder_name(batch_idx)
                 batch_folder.mkdir(exist_ok=True)
@@ -259,7 +262,7 @@ def process_images(input_dir: Path, output_dir: Path) -> None:
         
     logging.info(f'✨ Processing complete! Converted {successful_conversions} images, '
                 f'failed {len(failed_files)} images, '
-                f'across {(len(input_files) - 1) // chunk_size + 1} batches')
+                f'across {(len(input_files) - 1) // BATCH_SIZE + 1} batches')
 
 def is_jpeg(file_path: Path) -> bool:
     """
@@ -284,8 +287,11 @@ def copy_file(args: Tuple[Path, Path, Path]) -> Optional[str]:
         Optional[str]: Output filename if successful, None if failed
     """
     file_path, output_dir, batch_folder = args
-    output_filename = batch_folder / file_path.name
-    
+
+    # Use a UUID filename
+    unique_name = f"{uuid.uuid4().hex}.jpg"
+    output_filename = batch_folder / unique_name
+
     try:
         output_filename.write_bytes(file_path.read_bytes())
         return str(output_filename)
@@ -313,14 +319,13 @@ def batch_copy_jpeg(input_dir: Path, output_dir: Path) -> None:
     
     # Calculate optimal number of processes
     num_processes = multiprocessing.cpu_count()
-    chunk_size = 100  # Keep batch size consistent
     logging.info(f'🧮 Using {num_processes} processes')
     
     # Process files in parallel
     successful_copies = 0
     with tqdm(total=len(jpeg_files), desc='Copying JPEG files', unit='files') as pbar:
         with ProcessPoolExecutor(max_workers=num_processes) as executor:
-            for batch_idx, file_batch in enumerate(chunk_list(jpeg_files, chunk_size)):
+            for batch_idx, file_batch in enumerate(chunk_list(jpeg_files, BATCH_SIZE)):
                 # Create batch folder
                 batch_folder = output_dir / get_batch_folder_name(batch_idx)
                 batch_folder.mkdir(exist_ok=True)
@@ -338,7 +343,7 @@ def batch_copy_jpeg(input_dir: Path, output_dir: Path) -> None:
                 pbar.set_postfix({'copied': successful_copies})
     
     logging.info(f'✨ Copy complete! Moved {successful_copies} JPEG files '
-                f'across {(len(jpeg_files) - 1) // chunk_size + 1} batches')
+                f'across {(len(jpeg_files) - 1) // BATCH_SIZE + 1} batches')
 
 def main() -> None:
     """Main entry point of the script."""
