@@ -3,7 +3,7 @@ import logging
 from math import sqrt
 from pathlib import Path
 from typing import Tuple, Optional, List, Iterator
-from PIL import Image
+from PIL import Image, ImageOps
 import sys
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
@@ -58,22 +58,17 @@ def get_batch_folder_name(batch_number: int) -> str:
 
 def convert_to_rgb(image: Image.Image) -> Image.Image:
     """
-    Convert image to RGB if it's in RGBA mode.
-    
-    Args:
-        image: PIL Image object
-        
-    Returns:
-        Image.Image: RGB version of the image
+    Convert any image mode to RGB, compositing transparency onto white and
+    flattening palette / greyscale / 16-bit modes so the JPEG save cannot fail.
     """
-    if image.mode == 'RGBA':
-        logging.debug(f'🎨 Converting image from RGBA to RGB')
-        # Create white background
-        background = Image.new('RGB', image.size, (255, 255, 255))
-        # Composite the image onto the background using alpha channel
-        background.paste(image, mask=image.split()[3])
+    if image.mode == 'RGB':
+        return image
+    if image.mode in ('RGBA', 'LA') or (image.mode == 'P' and 'transparency' in image.info):
+        rgba = image.convert('RGBA')
+        background = Image.new('RGB', rgba.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.split()[-1])
         return background
-    return image
+    return image.convert('RGB')
 
 def try_load_image(file_path: Path) -> Optional[Image.Image]:
     """
@@ -108,6 +103,13 @@ def try_load_image(file_path: Path) -> Optional[Image.Image]:
         else:
             image = Image.open(file_path)
         
+        # Honour EXIF orientation BEFORE resizing/saving. Without this, any
+        # photo tagged as rotated (very common from phones) is written sideways.
+        try:
+            image = ImageOps.exif_transpose(image)
+        except Exception as orient_error:
+            logging.debug(f'⚠️ Could not apply EXIF orientation: {orient_error}')
+
         return convert_to_rgb(image)
     except Exception as e:
         logging.info(f'❌ Failed to load image: {file_path} | Error: {str(e)}')
